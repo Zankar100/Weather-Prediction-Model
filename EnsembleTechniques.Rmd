@@ -1,0 +1,1063 @@
+---
+title: "Experiments with Ensemble techniques"
+author: "Zankar Murudkar"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Objective of study
+
+Our objective of this study will be to study various ensemble techniques, implement them on certain classifiers and try to improve the performance of classifiers using these techniques.
+For Conclusion, we will compare the test accuracies for various classifiers with implemented Ensemble techniques.
+
+For our study the Classifiers to be implemented are:
+1)Logistic Regression
+2)Naive Bayes
+3)KNN
+4)SVM
+
+We will run an experiment by changing the training set from 10%-90% using the rest as test data and compare the results.
+
+We implement the below mentioned Ensemble techniques on given classifiers:
+1)10 fold Cross Validation
+2)LOOCV
+3)Bagging
+4)gbm
+5)Random Forest while improving the dataset
+
+The dataset to be used is "weather" dataset used in HW01.
+We will implement all the data improvement methods like removing constant features, removing correlation, etc as implemented in HW01
+We will not go into detailed Exploratory Data Analysis in this study.
+
+## Data Analysis
+
+Now we will load our dataset.
+
+We load our **raw** dataset as **rain** 
+```{r load data}
+path = "/Users/zankar/Desktop/ML/weatherAUS.csv"
+rain <- read.csv(path,header=TRUE,sep=',',stringsAsFactors = F)
+```
+
+## NA Values in data
+
+We check number of NA values present in each column and remove the rows with present NA values.
+```{r NAvalues}
+sapply(rain, function(x) sum(is.na(x)))
+weather <- na.omit(rain)
+sapply(weather,function(x) sum(is.na(x)))
+```
+
+## Type of Variables
+
+**Date** is in the year/month/day format, the day and year seem to be irrelevant for our prediction but the month can be a relevant factor. We will extract only the month from the Date column which will result in 12 Categorical values from 1-12 indicating months.
+```{r date}
+weather$Date <- as.Date(as.character(weather$Date))
+weather$Date <- strftime(weather$Date,"%m")
+table(weather$Date)
+```
+
+We have numerical as well as character values. Character values may be a hindrance while performing numerical operations on the data like calculating distances, correlation, etc.
+Therefore we will convert our Character values to numeric.
+```{r chartonum}
+weather$Location <- as.numeric(as.factor(weather$Location))
+weather$WindGustDir <- as.numeric(as.factor(weather$WindGustDir))
+weather$WindDir9am <- as.numeric(as.factor(weather$WindDir9am))
+weather$WindDir3pm <- as.numeric(as.factor(weather$WindDir3pm))
+weather$RainTomorrow <-ifelse(weather$RainTomorrow=='Yes',1,0)
+weather$RainToday <-ifelse(weather$RainToday=='Yes',1,0)
+weather$Date <- as.numeric(as.factor(weather$Date))
+str(weather)
+```
+
+## Looking for Constant Variables
+
+We will still and remove if we have any constant features.
+```{r constant}
+isConstant<-function(x) length(names(table(x)))<2
+apply(weather,2,isConstant)
+```
+The result indicates we do not have any constant features.
+
+
+## Variable Correlation
+
+Multiple Correlated attributes may influence the prediction values. We will check for Correlation and remove attributes which may be highly correlated to any other attributes.
+
+Creating a Correlation matrix between all Predictor attributes.
+```{r corr}
+cor(weather)
+```
+Going through the matrix, we can see that Correlation values between MaxTemp,MinTemp,Temp9am, Temp3pm is very high. Similarly we have high Correlation between Pressure9am and Pressure3pm.
+
+Let's plot a graph for the correlation values.
+```{r corplot}
+if(!require(ggcorrplot))install.packages('ggcorrplot')
+library(ggcorrplot)
+p<-ggcorrplot(cor(weather))
+p + theme(axis.text.x = element_text(angle = 90))
+```
+
+Looking for methods to understand Correlation between Predictors efficiently, I came across a very helpful git repository which includes a number of functions for Visualizations and plots.
+Below we will use one of the functions from mentioned repository to get top 10-15 correlated variables.
+I have commented the install script.
+```{r corrplot2}
+#devtools::install_github("laresbernardo/lares")
+library(lares)
+corr_cross(weather, # name of dataset
+           max_pvalue = 0.05, # display only significant correlations (at 5% level)
+           top = 15 # display top 15 couples of variables (by correlation coefficient)
+)
+```
+
+
+## Removing Highly Correlated Variables
+
+From the above plot we can see the 15 most Correlated pairs.
+We will subset our dataset and remove Temp3pm, Temp9am and keep MaxTemp and MinTemp only.
+Pressure9am and Pressure3pm are the 3rd highest Correlation pair. We will remove Pressure9am and keep the other Predictor.
+```{r removecor}
+weather2<-subset(weather, select = -c(Temp3pm,Temp9am,Pressure9am))
+```
+
+Let's plot the Correlation again to see if we have any other highly correlated pairs.
+```{r corrplot3}
+p2<-ggcorrplot(cor(weather2))
+p2 + theme(axis.text.x = element_text(angle = 90))
+
+corr_cross(weather2, # name of dataset
+           max_pvalue = 0.05, # display only significant correlations (at 5% level)
+           top = 15 # display top 15 couples of variables (by correlation coefficient)
+)
+```
+
+We have mostly removed Correlation above 0.8
+
+
+## RandomForest to determine Important features
+
+We will run the Random Forest algorithm on our data to find the importance of each predictor.
+
+```{r rf}
+require(randomForest)
+weather2$RainTomorrow<-as.factor(weather2$RainTomorrow)#converts numerical to categorial for rf
+class(weather2$RainTomorrow)
+
+weather.rf<-randomForest(RainTomorrow~.,data=weather2)
+importance(weather.rf)
+
+require(caret)
+varImp(weather.rf)
+
+varImpPlot(weather.rf)
+```
+
+Change Target variable back to numeric.
+```{r factortonum}
+weather2$RainTomorrow<-as.numeric(weather2$RainTomorrow)
+weather2$RainTomorrow <-ifelse(weather$RainTomorrow==1,1,0)
+```
+
+
+We will now find the top variables with most importance.
+
+```{r rf2}
+importanceOrder=order(-weather.rf$importance)
+names=rownames(weather.rf$importance)[importanceOrder][1:15]
+names
+```
+
+Create a data frame with **Top 15 Predictors** based on Importance.
+```{r impdf}
+impweather<-weather2[,names]
+impweather$RainTomorrow <- weather2$RainTomorrow
+
+dim(impweather)
+head(impweather)
+```
+
+
+
+## Binary or MultiClass Classification ?
+
+```{r biormul}
+classLabels<-table(impweather$RainTomorrow)
+print(classLabels)
+names(classLabels)
+length(names(classLabels))
+ifelse(length(names(classLabels))==2,"binary classification", "multi-class classification")
+```
+
+We have **Binary Classification** at hand.
+
+## Dividing the data
+
+**Dividing data into training and testing data**
+70% for training, 30% for testing
+
+```{r trts}
+set.seed(43)
+tstidx<-sample(1:nrow(impweather),0.30*nrow(impweather),replace=F)
+trdata<-impweather[-tstidx,]
+tsdata<-impweather[tstidx,]
+```
+
+## Classifiers
+
+We conclude the Exploratory data analysis and use the acquired dataset with minimum correlation between variables and selected important variables.
+The dataset will be tested on the below mentioned classifiers:
+1) Logistic Regression
+2) Naive Bayes
+3) KNN
+4)SVM
+
+We will find the Test Accuracies from the above mentioned Classifiers and compare them.
+
+
+## Logistic Regression
+
+Let's start with Logistic Regression.
+
+First setup all the required libraries.
+```{r lgr}
+
+library(plotly)
+if(!require(stringr))install.packages('stringr')
+library(stringr)
+if(!require(car))install.packages('car')
+library(car)
+if(!require(e1071))install.packages('e1071')
+library(e1071)
+require(e1071)
+if(!require(caret))install.packages('caret')
+library(caret)
+require(caret)
+if(!require(pROC))install.packages('pROC')
+library(pROC)
+if(!require(ROCR))install.packages('ROCR')
+library(ROCR)
+```
+
+
+Generalization Phase.
+We use the Logistic Regression model on our dataset to find and improve model accuracies.
+```{r lgr2}
+glm_model<-glm(RainTomorrow~.,data=impweather, family='binomial')
+summary_glm_model<-summary(glm_model)
+coef_summary_glm_model<-coef(summary_glm_model)
+```
+
+Findind and selecting Predictors with Coefficient values less than 0.05
+```{r lgr3}
+
+row_names<-row.names(coef_summary_glm_model[coef_summary_glm_model[,4]<0.05,])
+row_names
+
+ifelse(summary_glm_model$deviance<summary_glm_model$null.deviance,"model has improved","model has not helped")
+```
+
+Create a formula string with above found Predictors with Coefficient values less than 0.05
+```{r lgr4}
+formularhs <- paste(row.names(coef_summary_glm_model[coef_summary_glm_model[,4]<0.05,]),collapse='+')
+formularhs
+
+library(stringr)
+formularhs <- str_extract(formularhs, "Humidity3pm+(?s)(.*$)")
+
+formulastr<-paste('RainTomorrow~',formularhs,sep='')
+formulastr
+```
+
+Using the formula string in the glm model.
+```{r lgr5}
+model2<-glm(formulastr,data=impweather,family='binomial')
+summ_model2<-summary(model2)
+coef_summ_model2<-coef(summ_model2)
+
+```
+
+Running vif to improve the formula string.
+```{r lgr6}
+library(car)
+vif_model<-vif(model2)
+
+vif_model
+nl<-names(vif_model[vif_model<4])
+(newformulastr<-paste('RainTomorrow~',paste(nl,collapse='+')))
+newformulastr
+```
+
+Running glm with newly acquired formula string.
+```{r lgr7}
+newmodel<-glm(newformulastr,data=impweather,family='binomial')
+summnewmodel<-summary(newmodel)
+
+(p_values<-coef(summnewmodel)[,4])
+
+table(p_values<0.005)
+```
+
+Using the glm model to predict Class values and find accuracy.
+```{r lgr8}
+predYprob<-predict(newmodel,impweather[,1:15],type='response')
+predY<-ifelse(predYprob<0.5,0,1)
+
+library(caret)
+library(e1071)
+
+cfm<-caret::confusionMatrix(table(impweather[[16]],predY))
+cfm
+```
+
+We now use the above created optimized formula string over training data to create a glm training model.
+```{r lgr9}
+
+glm.trmodel<-glm(newformulastr,data=trdata,family='binomial')
+
+predtr<-predict(glm.trmodel,trdata[,1:15],type='response')
+
+predtrclass<-ifelse(predtr<0.5,0,1)
+
+length(predtrclass)==length(trdata[[16]])
+(trcfm<-caret::confusionMatrix(table(trdata[[16]],predtrclass)))
+```
+
+The Training accuracies are satisfactory. Therefore we use the training model on the test data.
+```{r lgr10}
+predts<-predict(glm.trmodel,tsdata[,1:15],type='response')
+predtsclass<-ifelse(predts<0.5,0,1)                            
+
+tscfm<-caret::confusionMatrix(table(tsdata[[16]],predtsclass))
+tscfm
+
+lgr_tst_accuracy <- tscfm$overall['Accuracy']
+
+(precision <- tscfm$byClass['Pos Pred Value'])    
+(recall <- tscfm$byClass['Sensitivity'])
+(f_measure <- 2 * ((precision * recall) / (precision + recall))) #geometric mean instead of arithmatic mean
+
+```
+
+
+
+## Naive Bayes
+
+Setting up required libraries.
+```{r nb}
+library(e1071)
+library(caret)
+library(magrittr)
+library(dplyr)
+```
+
+Generalization phase for NaiveBayes with the entire data.
+```{r nb2}
+nbtr.model1<-naiveBayes(RainTomorrow~.,data=impweather)
+nbtr.pred<-predict(nbtr.model1,impweather[,-c(16)],type='raw')
+nbtr.class<-unlist(apply(round(nbtr.pred),1,which.max))-1
+nbtr.tbl<-table(impweather[[16]], nbtr.class)
+cfm<-caret::confusionMatrix(nbtr.tbl)
+cfm
+```
+
+
+Training the model over Training data and find resulting Training accuracies.
+```{r nb4}
+nbtr.model<-naiveBayes(RainTomorrow~.,data=trdata)
+
+nbtr.trpred<-predict(nbtr.model,trdata[,-c(16)],type='raw')
+nbtr.trclass<-unlist(apply(round(nbtr.trpred),1,which.max))-1
+nbtr.trtbl<-table(trdata[[16]], nbtr.trclass)
+tr.cfm<-caret::confusionMatrix(nbtr.trtbl)
+tr.cfm
+```
+
+Using the Training model over test data to find Test accuracies.
+```{r nb5}
+nbtr.tspred<-predict(nbtr.model,tsdata[,-c(16)],type='raw')
+
+roc.nbtr.tspred<-nbtr.tspred[,2]
+nbtr.tsclass<-unlist(apply(round(nbtr.tspred),1,which.max))-1
+nbtr.tstbl<-table(tsdata[[16]], nbtr.tsclass)
+tst.cfm<-caret::confusionMatrix(nbtr.tstbl)
+tst.cfm
+
+nb_tst_accuracy <- tst.cfm$overall['Accuracy']
+```
+
+
+
+## KNN
+
+We implement KNN from the "class" library. 
+Setting up required libraries.
+```{r knn}
+
+library(class)
+library(ROCR)
+```
+
+We set the dataframe, labelcolumn which we wish to predict. 
+```{r knn2}
+
+knn.df<-impweather
+knn.ids <- sample(1:nrow(knn.df),nrow(knn.df),replace = F)
+knn.df <- knn.df[knn.ids,]
+labelcol <- 16
+```
+
+Dividing the dataframe into test and training dataframes.
+```{r knn3}
+set.seed(43)
+n<-nrow(knn.df)
+knn.df<- knn.df[sample(n),]
+
+train.df <- knn.df[1:as.integer(0.7*n),]
+test.df <- knn.df[as.integer(0.7*n +1):n,]
+```
+
+Since KNN calculates distances, we convert our labelcolumn to factor.
+```{r knn4}
+cl<-factor(train.df[,16])
+```
+
+Running the KNN classifier with K=12,
+We tried the classifier with diifferent values of K from K=4 to K=15, and K=12 seems to provide with consistent accuracy.
+
+```{r knn5}
+
+knnPred<-knn(train.df[,-c(labelcol)],test.df[,-c(labelcol)], cl, k = 12, prob=TRUE)
+prob<-attr(knnPred,"prob")
+kp<-prediction(prob,test.df[,labelcol])
+AUC<-performance(kp,"auc")
+
+pred_knn<-performance(kp,"tpr","fpr")
+
+TBL<-table(test.df[,labelcol],knnPred)
+
+print(paste("accuracy=",sum(diag(TBL))/sum(TBL)))
+
+knn_accuracy <- sum(diag(TBL))/sum(TBL)
+
+####
+knnPred=as.numeric(knnPred)
+
+knn.trclass<-unlist(apply(round(knnPred),1,which.max))-1
+knn.trtbl<-table(train.df[[16]], knn.trclass)
+knn.cfm<-caret::confusionMatrix(nbtr.trtbl)
+knn.cfm
+```
+
+
+
+##SVM
+
+
+We use SVM from "e1071" library.
+Setting up the required libraries.
+```{r svm}
+
+library(plotly)
+library(e1071)
+library(lattice)
+library(caret)
+library(pROC)
+```
+
+Generalization phase for SVM over dataset.
+```{r svm2}
+impweather2$RainTomorrow <- factor(impweather2$RainTomorrow)
+svm_model <- svm(RainTomorrow~.,data=impweather2,probability=TRUE)
+svm_model
+
+svmpredict <- predict(svm_model,impweather2[,-c(16)],probability = TRUE)
+probs <- attr(svmpredict,"prob")[,"1"]
+predclass <- ifelse(probs>0.5,1,0)
+table(impweather2$RainTomorrow==predclass)
+(cfmx <- caret::confusionMatrix(table(impweather2$RainTomorrow,predclass)))
+```
+
+
+We now Train the SVM model over training data and find Training error and accuracies.
+```{r svm3}
+
+svm_train_model <- svm(RainTomorrow~.,data=trdata,probability=TRUE)
+
+svm_train_predict <- predict(svm_train_model,trdata[,-c(16)],probability = TRUE)
+#train_probs <- attr(svm_train_predict,"prob")[,"1"]
+
+train_predclass<-ifelse(svm_train_predict<0.5,0,1)
+
+#train_predclass <- ifelse(train_probs>0.5,1,0)
+tr_tbl <- table(trdata$RainTomorrow,train_predclass)
+(tr_cfmx <- caret::confusionMatrix(tr_tbl))
+
+cdf <- data.frame(all=cfmx$byClass,tr=tr_cfmx$byClass)
+cdf
+```
+
+The Training accuracies seem to be satisfactory. Therefore we use the Training model over the test data.
+```{r svm4}
+svm_tst_predict <- predict(svm_train_model,tsdata[,-c(16)],probability = TRUE)
+#tst_probs <- attr(svm_tst_predict,"prob")[,"1"]
+tst_predclass <- ifelse(svm_tst_predict>0.5,1,0)
+tst_tbl <- table(tsdata$RainTomorrow,tst_predclass)
+(tst_cfmx <- caret::confusionMatrix(tst_tbl))
+
+tst_cfmx
+svm_tst_accuracy <- tst_cfmx$overall['Accuracy']
+
+cdf <- cbind(cdf,ts=tst_cfmx$byClass)
+cdf
+```
+
+Change Target variable back to numeric.
+
+```{r factortonum2}
+impweather2$RainTomorrow<-as.numeric(impweather2$RainTomorrow)
+str(impweather2$RainTomorrow)
+table(impweather2$RainTomorrow)
+impweather2$RainTomorrow <-ifelse(impweather2$RainTomorrow==2,1,0)
+table(impweather2$RainTomorrow)
+```
+
+
+
+## Plotting the Accuracies obtained from different classifiers.
+
+We have accuracies obtained from the test data evaluation. The Classifiers used include Logistic Regression, Naive Bayes, KNN and SVM.
+The below plot shows their accuracy comparison.
+
+```{r plotacc}
+
+accuracy_values <- c(lgr_tst_accuracy,nb_tst_accuracy,knn_accuracy,svm_tst_accuracy)
+accuracy_values <- round(accuracy_values,4)
+names(accuracy_values) <- c("Logistic","NaiveBayes","KNN","SVM")
+
+ylim <- c(0, 1.1*max(accuracy_values))
+## Plot, and store x-coordinates of bars in xx
+xx <- barplot(accuracy_values, xaxt = 'n', xlab = '', width = 0.85, ylim = ylim,
+              main = "Accuracies for different Classifiers", 
+              ylab = "Accuracy")
+## Add text at top of bars
+text(x = xx, y = accuracy_values, label = accuracy_values, pos = 3, cex = 0.8, col = "red")
+## Add x-axis labels 
+axis(1, at=xx, labels=names(accuracy_values), tick=FALSE, las=2, line=-0.5)
+
+```
+
+
+
+##Experiment by changing the training set from 10%-90% using the rest as test data and compare the results.
+
+We formulate a function to calculate Accuracy values when we change the training set from 10% to 90% and using rest as test data.
+We implement the function of the above 3 used Classifiers:
+1)Logistic Regression
+2)Naive Bayes
+3)SVM
+
+```{r 10-90}
+
+acc10to90 = function(data,classifier){
+
+  df=data
+  accuracy10to90 = list()
+  
+  
+  for(i in seq(10,90,10)){
+  
+    trid = sample(1:nrow(data),i/100*nrow(data),replace=F)
+    tr = data[trid,]
+    ts = data[-trid,]
+    
+    if(classifier=="LGR"){
+    
+      m=glm(newformulastr,data=tr,family='binomial')
+      p=predict(m,ts[,1:15],type='response')
+      predY<-ifelse(p<0.5,0,1)
+      lgcfm<-caret::confusionMatrix(table(ts[[16]],predY))
+      lgcfm
+      lgr_accuracy <- lgcfm$overall['Accuracy']
+      accuracy10to90 = c(accuracy10to90,lgr_accuracy)
+    
+    }else if(classifier=="NB"){
+    
+      m=naiveBayes(RainTomorrow~.,data=tr)
+      p=predict(m,ts[,-c(16)],type='raw')
+      nb.class<-unlist(apply(round(p),1,which.max))-1
+      nb.tbl<-table(ts[[16]], nb.class)
+      nb.cfm<-caret::confusionMatrix(nb.tbl)
+      nb_accuracy = nb.cfm$overall['Accuracy']
+      accuracy10to90 = c(accuracy10to90,nb_accuracy)
+      
+    }else if(classifier=="SVM"){
+      
+      m <- svm(RainTomorrow~.,data=tr,probability=TRUE)
+      p <- predict(m,ts[,-c(16)],probability = TRUE)
+      tst_predclass <- ifelse(p>0.5,1,0)
+      tst_tbl <- table(ts$RainTomorrow,tst_predclass)
+      tst_cfmx <- caret::confusionMatrix(tst_tbl)
+      svm_accuracy <- tst_cfmx$overall['Accuracy']
+      accuracy10to90 = c(accuracy10to90,svm_accuracy)
+      
+    }else{
+      print("Select valid classifier: LGR,NB,KNN")
+    }
+  
+  }
+  
+  return(accuracy10to90)
+}
+```
+
+
+##Testing 10 to 90 
+
+**Testing the 10-90 function on NAIVE BAYES.**
+
+
+```{r 10-90nb}
+result=acc10to90(impweather,"NB")
+
+result=as.numeric(result)
+result <- round(result,4)
+
+names(result)=c(10,20,30,40,50,60,70,80,90)
+
+ylim <- c(0, 1.1*max(result))
+## Plot, and store x-coordinates of bars in xx
+xx <- barplot(result, xaxt = 'n', xlab = '', width = 0.85, ylim = ylim,
+              main = "Accuracies for Naive Bayes with 10% t0 90% data as traindata", 
+              ylab = "Accuracy")
+## Add text at top of bars
+text(x = xx, y = result, label = result, pos = 3, cex = 0.8, col = "red")
+## Add x-axis labels 
+axis(1, at=xx, labels=names(result), tick=FALSE, las=2, line=-0.5)
+
+```
+
+
+**Testing the 10-90 function on Logistic Regression.**
+
+```{r 10-90lgr}
+result=acc10to90(impweather,"LGR")
+
+result=as.numeric(result)
+result <- round(result,4)
+
+names(result)=c(10,20,30,40,50,60,70,80,90)
+
+ylim <- c(0, 1.1*max(result))
+## Plot, and store x-coordinates of bars in xx
+xx <- barplot(result, xaxt = 'n', xlab = '', width = 0.85, ylim = ylim,
+              main = "Accuracies for Logistic Regression with 10% t0 90% data as traindata", 
+              ylab = "Accuracy")
+## Add text at top of bars
+text(x = xx, y = result, label = result, pos = 3, cex = 0.8, col = "red")
+## Add x-axis labels 
+axis(1, at=xx, labels=names(result), tick=FALSE, las=2, line=-0.5)
+
+```
+
+
+
+##Cross Validation
+
+
+We define a 10 Fold Cross Validation function on the below mentioned classifiers:
+1)Naive Bayes
+2)Logistic Regression
+3)SVM
+
+We perform Cross Validation on the Training data and use generated model on the Testing data.
+
+```{r cv}
+
+cv10f = function(tr,ts,classifier){
+  start_tm <- proc.time()
+
+  N<-nrow(tr)
+  NF=10
+  folds<-split(1:N, cut(1:N,quantile(1:N,probs = seq(0,1,by=1/NF))))
+  length(folds)
+
+  lapply(folds,length)
+
+  ridx<-sample(1:nrow(tr),nrow(tr),replace = FALSE)
+
+
+  cv_df<-do.call('rbind',lapply(folds,FUN = function(idx,data=tr[ridx,])
+  {
+    if(classifier=="NB"){
+      m<-naiveBayes(RainTomorrow~.,data = data[-idx,])
+      p<-predict(m,data[idx,-c(16)],type='raw')
+    }else if(classifier=="LGR"){
+      m=glm(newformulastr,data=tr,family='binomial')
+      p=predict(m,ts[,1:15],type='response')
+    }else if(classifier=="SVM"){
+      m <- svm(RainTomorrow~.,data=tr,probability=TRUE)
+      p <- predict(m,ts[,-c(16)],probability = TRUE)
+    }else{
+      print("Provide valid classifier")
+    }
+    
+    pc<-unlist(apply(round(p),1,which.max))-1
+    pred_tbl<-table(data[idx,c(16)],pc)
+    pred_cfm<-caret::confusionMatrix(pred_tbl)
+    list(fold=idx,m=m,cfm=pred_cfm)
+  }
+  ))
+
+  cv_df<-as.data.frame(cv_df)
+  tstcv.perf<-as.data.frame(do.call('rbind',lapply(cv_df$cfm,FUN = function(cfm)c(cfm$overall,cfm$byClass))))
+  
+  print("This is the Accuracy performance of Training data with 10 fold CV")
+  print(cv.tst.perf<-apply(tstcv.perf[tstcv.perf$AccuracyPValue<0.01,-c(6:7)],2,mean))
+  
+  print("")
+  print("This is the Accuracy variance for Training data")
+  print(cv.tst.perf.var<-apply(tstcv.perf[tstcv.perf$AccuracyPValue<0.01,-c(6:7)],2,sd))
+  
+  tstcv_preds<-lapply(cv_df$m,FUN=function(M,D=ts[,-c(16)])predict(M,D,type='raw'))
+  tstcv_cfm<-lapply(tstcv_preds,FUN = function(P,A=ts[[16]])
+  {
+    pred_class<-unlist(apply(round(P),1,which.max))-1
+    pred_tbl<-table(pred_class,A)
+    pred_cfm<-caret::confusionMatrix(pred_tbl)
+    pred_cfm
+  })
+
+  tstcv.perf<-as.data.frame(do.call('rbind',lapply(tstcv_cfm,FUN = function(cfm)c(cfm$overall,cfm$byClass))))
+  
+  print("")
+  print("This is the Accuracy performance of Testing data with 10 fold CV")
+  print(cv.tst.perf<-apply(tstcv.perf[tstcv.perf$AccuracyPValue<0.01,-c(6:7)],2,mean))
+  print("")
+  print("This is the Accuracy variance for Testing data")
+  print(cv.tst.perf.var<-apply(tstcv.perf[tstcv.perf$AccuracyPValue<0.01,-c(6:7)],2,sd))
+  return(cv.tst.perf)
+}
+```
+
+
+Running the Cross Validation function on classifiers to find Accuracies.
+**10 Fold Cross Validation on Naive Bayes**
+
+```{r cv2}
+result=cv10f(trdata,tsdata,"NB")
+nb_cv10f_accuracy = result['Accuracy']
+nb_cv10f_accuracy
+```
+
+
+**10 Fold Cross Validation on Logistic Regression**
+
+```{r cv3}
+result=cv10f(trdata,tsdata,"LGR")
+lg_cv10f_accuracy = result['Accuracy']
+lg_cv10f_accuracy
+```
+
+
+**10 Fold Cross Validation on SVM**
+
+```{r cv4}
+#SVM implementation takes a lot of time but implements successfully, commenting to knit rmd file
+#result=cv10f(trdata,tsdata,"SVM")
+#svm_cv10f_accuracy = result['Accuracy']
+#svm_cv10f_accuracy
+```
+
+
+## LOOCV
+
+LOOCV is an extension of K Folds CV.
+Here instead of folds we leave out each observation as test data and train on remaining data, this repeats until all observations have been considered as test data.
+
+In our version of LOOCV, I have added a percent parameter in the function since my dataset is very big and I would train using percentages of data.
+```{r loocv}
+
+loocv=function(tra,ts,percent,classifier){
+  start_tm <- proc.time()
+  
+  trid = sample(1:nrow(tra),percent/100*nrow(tra),replace=F)
+  tr = tra[trid,]
+  
+  N<-nrow(tr)
+  cv_df<-do.call('rbind',lapply(1:N,FUN = function(idx,data=tr){
+    if(classifier=="NB"){
+      m<-naiveBayes(RainTomorrow~.,data = data[-idx,])
+      p<-predict(m,data[idx,-c(16)],type='raw')
+    }else if(classifier=="LGR"){
+      m=glm(newformulastr,data=tr,family='binomial')
+      p=predict(m,ts[,1:15],type='response')
+    }else if(classifier=="SVM"){
+      m <- svm(RainTomorrow~.,data=tr,probability=TRUE)
+      p <- predict(m,ts[,-c(16)],probability = TRUE)
+    }else{
+      print("Provide valid classifier")
+    }
+    
+    pc<-unlist(apply(round(p),1,which.max))-1
+    list(fold=idx,m=m,predicted=pc,actual=data[idx,c(16)])
+  }))
+  
+  cv_df<-as.data.frame(cv_df)
+  table(as.numeric(cv_df$actual)==as.numeric(cv_df$predicted))
+  
+  loocv_tbl<-table(as.numeric(cv_df$actual),as.numeric(cv_df$predicted))
+  loocv_cfm<-caret::confusionMatrix(loocv_tbl)
+  
+  tstcv.perf<-as.data.frame(do.call('cbind',lapply(cv_df$m,FUN = function(m,data=ts){
+    v<-predict(m,data[,c(16)],type='raw')
+    lbllist<-unlist(apply(round(v),1,which.max))-1
+  })))
+  
+  np<-ncol(tstcv.perf)
+  predclass<-unlist(apply(tstcv.perf,1,FUN = function(v){ifelse(sum(v[2:length(v)])/np<0.5,0,1)}))
+  loocvtbl<-table(ts[,c(16)],predclass)
+  loocv_cfm<-caret::confusionMatrix(loocvtbl)
+  
+  return(loocv_cfm)
+}
+
+```
+
+
+**LOOCV on Naive Bayes**
+20% of Training data used.
+```{r loocvnb}
+result=loocv(trdata,tsdata,20,"NB")
+nb_loocv_accuracy = result$overall['Accuracy']
+nb_loocv_accuracy
+```
+
+
+**LOOCV on Logistic Regression**
+20% of Training data used.
+```{r loocvlg}
+result=loocv(trdata,tsdata,20,"LGR")
+lg_loocv_accuracy = result$overall['Accuracy']
+lg_loocv_accuracy
+```
+
+
+**LOOCV on SVM**
+20% of Training data used.
+```{r loocvsvm}
+#commenting to finish knit
+#result=loocv(trdata,tsdata,20,"SVM")
+#svm_loocv_accuracy = result$overall['Accuracy']
+#svm_loocv_accuracy
+```
+
+
+
+##Bagging
+
+We perform bagging with 100 bootstraps on chosen classifiers.
+
+```{r bagg}
+
+bagg=function(tr,ts,classifier){
+  start_tm<-proc.time()
+  df<-tr
+  runModel<-function(df){
+    if(classifier=="NB"){
+      naiveBayes(RainTomorrow~.,data=df[sample(1:nrow(df),nrow(df),replace=T),])
+    }else if(classifier=="LGR"){
+      glm(newformulastr,data=df[sample(1:nrow(df),nrow(df),replace=T),],family='binomial')
+    }else if(classifier=="SVM"){
+      svm(RainTomorrow~.,data=df[sample(1:nrow(df),nrow(df),replace=T),],probability=TRUE)
+    }else{
+      print("Provide valid classifier")
+    }
+  }
+  lapplyrunmodel<-function(x)runModel(df)
+  system.time(models<-lapply(1:100,lapplyrunmodel))
+  object.size(models)
+  end_tm<-proc.time()
+  print(paste("time taken to run 100 bootstrapps",(end_tm-start_tm),sep=":"))
+  
+  bagging_preds<-lapply(models,FUN = function(M,D=ts[,-c(16)])predict(M,D,type='raw'))
+  
+  bagging_cfm<-lapply(bagging_preds,FUN=function(P,A=ts[[16]]){
+    pred_class<-unlist(apply(round(P),1,which.max))-1
+    pred_tbl<-table(A,pred_class)
+    pred_cfm<-caret::confusionMatrix(pred_tbl)
+    pred_cfm
+    
+  })
+  
+  bagging.perf<-as.data.frame(do.call('rbind',lapply(bagging_cfm,FUN = function(cfm)c(cfm$overall,cfm$byClass))))
+  
+  bagging.perf.mean<-apply(bagging.perf[bagging.perf$AccuracyPValue<0.01,-c(6:7)],2,mean)
+  
+  bagging.perf.var<-apply(bagging.perf[bagging.perf$AccuracyPValue<0.01,-c(6:7)],2,sd)
+  
+  return(bagging.perf.mean)
+  
+}
+
+```
+
+
+**Bagging on Naive Bayes**
+
+```{r bagg2}
+result=bagg(trdata,tsdata,"NB")
+nb_bagg_accuracy = result['Accuracy']
+nb_bagg_accuracy
+```
+
+
+**Bagging on Logistic Regression**
+
+```{r bagg3}
+result=bagg(trdata,tsdata,"LGR")
+lg_bagg_accuracy = result['Accuracy']
+lg_bagg_accuracy
+```
+
+
+**Bagging on SVM**
+
+```{r bagg4}
+result=bagg(trdata,tsdata,"SVM")
+svm_bagg_accuracy = result['Accuracy']
+svm_bagg_accuracy
+```
+
+
+##Gradient Boosting
+
+```{r gbm}
+require(gbm)
+require(ROCR)
+require(pROC)
+
+gbm_weather<-gbm(RainTomorrow~.,data=trdata,
+                 distribution="bernoulli",
+                 n.trees=500,
+                 shrinkage = 0.01,
+                 interaction.depth = 3,
+                 n.minobsinnode = 10,
+                 verbose = T,
+                 keep.data = F)
+
+gbm_predict<-predict(gbm_weather,tsdata[,-c(16)],type = "response",gbm_weather$n.trees)
+gbm_predicted<-round(gbm_predict)
+gbm_prediction<-prediction(gbm_predicted,tsdata$RainTomorrow)
+gbm_tbl<-table(tsdata$RainTomorrow,gbm_predicted)
+gbm_cfm<-caret::confusionMatrix(gbm_tbl)
+gbm_cfm
+
+gbm_accuracy<-gbm_cfm$overall['Accuracy']
+
+gbm_perf<-performance(gbm_prediction,measure = "tpr",x.measure="fpr")
+(gbm_auc<-performance(gbm_prediction,measure = "auc"))@y.values[[1]]
+
+```
+
+
+##Comparing the Classifier performance with and without different Ensemble techniques
+
+Now that we have performed Ensemble techniques on all the three used Classifiers and gathered Accuracy measures, we can compare the Ensemble techniques for each method and find overall which technique or classifier has the best performance..
+
+We will comparing Accuracies from below mentioned models:
+1)Naive Bayes
+2)Naive Bayes with 10 Fold Cross Validation
+3) Naive Bayes with LOOCV
+4)Naive Bayes with Bagging
+
+5)Logictic Regression
+6)Logistic Regression with 10 Fold Cross Validation
+7) Logistic Regression with LOOCV
+8)Logistic Regression with Bagging
+
+9)SVM
+10)SVM with 10 Fold Cross Validation
+11)SVM with LOOCV
+12)SVM with Bagging
+
+13)Gradient Boosting
+
+First let's visualize indiviual classifiers with their ensemble techniques
+
+**Naive Bayes**
+
+```{r nbem}
+accuracy_values1 <- c(nb_tst_accuracy,nb_cv10f_accuracy,nb_loocv_accuracy,nb_bagg_accuracy)
+accuracy_values1 <- round(accuracy_values1,4)
+names(accuracy_values1) <- c("NaiveBayes","NBCV","NBLOOCV","NBBagg")
+
+ylim <- c(0, 1.1*max(accuracy_values1))
+## Plot, and store x-coordinates of bars in xx
+xx <- barplot(accuracy_values1, xaxt = 'n', xlab = '', width = 0.85, ylim = ylim,
+              main = "Accuracies for Naive Bayes Classifiers", 
+              ylab = "Accuracy")
+## Add text at top of bars
+text(x = xx, y = accuracy_values1, label = accuracy_values1, pos = 3, cex = 0.8, col = "red")
+## Add x-axis labels 
+axis(1, at=xx, labels=names(accuracy_values1), tick=FALSE, las=2, line=-0.5)
+```
+
+
+**Logistic Regression**
+
+```{r lgem}
+accuracy_values2 <- c(lgr_tst_accuracy,lg_cv10f_accuracy,lg_loocv_accuracy,lg_bagg_accuracy)
+accuracy_values2 <- round(accuracy_values2,4)
+names(accuracy_values2) <- c("Logistic","LGRCV","LGRLOOCV","LGRBagg")
+
+ylim <- c(0, 1.1*max(accuracy_values2))
+## Plot, and store x-coordinates of bars in xx
+xx <- barplot(accuracy_values2, xaxt = 'n', xlab = '', width = 0.85, ylim = ylim,
+              main = "Accuracies for Logistic Regression Classifiers", 
+              ylab = "Accuracy")
+## Add text at top of bars
+text(x = xx, y = accuracy_values2, label = accuracy_values2, pos = 3, cex = 0.8, col = "red")
+## Add x-axis labels 
+axis(1, at=xx, labels=names(accuracy_values2), tick=FALSE, las=2, line=-0.5)
+```
+
+
+**SVM**
+
+```{r svmem}
+accuracy_values3 <- c(svm_tst_accuracy,svm_cv10f_accuracy,svm_loocv_accuracy,svm_bagg_accuracy)
+accuracy_values3 <- round(accuracy_values3,4)
+names(accuracy_values3) <- c("SVM","SVMCV","SVMLOOCV","SVMBagg")
+
+ylim <- c(0, 1.1*max(accuracy_values3))
+## Plot, and store x-coordinates of bars in xx
+xx <- barplot(accuracy_values3, xaxt = 'n', xlab = '', width = 0.85, ylim = ylim,
+              main = "Accuracies for SVM Classifiers", 
+              ylab = "Accuracy")
+## Add text at top of bars
+text(x = xx, y = accuracy_values3, label = accuracy_values3, pos = 3, cex = 0.8, col = "red")
+## Add x-axis labels 
+axis(1, at=xx, labels=names(accuracy_values3), tick=FALSE, las=2, line=-0.5)
+```
+
+
+Finding the overall best Classifier model for our data.
+**Overall**
+
+```{r allem}
+accuracy_values4 <- c(accuracy_values1,accuracy_values2,accuracy_values3) 
+
+ylim <- c(0, 1.1*max(accuracy_values4))
+## Plot, and store x-coordinates of bars in xx
+xx <- barplot(accuracy_values4, xaxt = 'n', xlab = '', width = 0.85, ylim = ylim,
+              main = "Accuracies for SVM Classifiers", 
+              ylab = "Accuracy")
+## Add text at top of bars
+text(x = xx, y = accuracy_values4, label = accuracy_values4, pos = 3, cex = 0.8, col = "red")
+## Add x-axis labels 
+axis(1, at=xx, labels=names(accuracy_values4), tick=FALSE, las=2, line=-0.5)
+```
+
